@@ -1,0 +1,189 @@
+library(FinTS)
+library('RODBC')
+library(data.table)
+library(ggplot2)
+library(gdata)
+library(forecast)
+library(boot)
+library(nlme)
+
+modelname<-function(x){## should return three names to test residuals 
+  da=decompose(x,type="additive")
+  da_res=window(da$random, start=as.numeric(start(x)+c(0,26)),
+                end=as.numeric(end(x)-c(0,26)))
+  rmseda=sqrt(sum(da_res^2)/length(da_res))
+  ##dm=decompose(x,type="multiplicative")
+  ##dm_res=window(x-dm$trend*dm$seasonal , start=as.numeric(start(x)+c(0,26)),
+  ##end=as.numeric(end(x)-c(0,26)))
+##rmsedm=sqrt(sum(dm_res^2)/length(dm_res))
+  stl=stl(x,s.window='periodic')
+  rmsestl=sqrt(sum(stl$time.series[,'remainder']^2)/
+               length(stl$time.series[,'remainder']))
+## RMSE for stl does not kill first half year and last half year 
+## no standardization needed cuz they are all devided by length
+  time=time(x)
+  seas=cycle(x)
+  data=coredata(x)
+  reg2=lm(data~0+time+time^2+factor(seas))
+  rmse_reg2=sqrt(sum(resid(reg2)^2)/length(resid(reg2)))
+  reg3=lm(data~0+time+time^2+time^3+factor(seas))
+  rmse_reg3=sqrt(sum(resid(reg3)^2)/length(resid(reg3)))
+  hwa=HoltWinters(x,seasonal='additive')
+  res_hwa=x-hwa$fitted[,'xhat']
+  rmse_hwa=sqrt(sum(res_hwa^2)/length(res_hwa))
+  autoarima=auto.arima(x,approximation=FALSE,stationary=FALSE,max.p=4,max.q=4)
+  res_arima=autoarima$residuals 
+  rmse_arima=sqrt(sum(res_arima^2)/length(res_arima))
+  c1=c("da","stl","reg^2","reg^3","HW","AutoArima")                      
+  c2=c(rmseda,rmsestl,rmse_reg2,rmse_reg3,rmse_hwa,rmse_arima)
+## y=data.frame(c1,c2)
+  min_rmse=min(rmseda,rmsestl,rmse_reg2,rmse_reg3,rmse_hwa,rmse_arima)
+  m<-match(min_rmse,c2)
+  return(c1[m])
+##return(c(rmseda,rmsedm,rmsestl,rmse_reg2,rmse_reg3,rmse_hwa,rmse_arima,c1[m]))
+}
+
+modelselected<-function(x){
+  da=decompose(x,type="additive")
+  stl=stl(x,s.window='periodic')
+  time=time(x)
+  seas=cycle(x)
+  data=coredata(x)
+  reg2=lm(data~0+time+time^2+factor(seas))
+  reg3=lm(data~0+time+time^2+time^3+factor(seas))
+  hwa=HoltWinters(x,seasonal='additive')
+  autoarima=auto.arima(x,approximation=FALSE,stationary=FALSE,max.p=4,max.q=4)
+  modelname<-modelname(x)
+  ## fill in the other time series models 
+ if(modelname=="da"){
+   result=da
+ }
+ else if(modelname=="stl"){
+   result=stl
+ }
+ else if(modelname=="reg^2"){
+   result=reg2
+ }
+ else if(modelname=="reg^3"){
+   result=reg3
+ }
+ else if(modelname=="HW"){
+   result=HW  
+ }
+ else result=autoarima
+ return(result)
+}
+
+residualplot<-function(x){
+  modelselected<-modelselected(x)
+  modelname<-modelname(x)
+  ##modelname="AutoArima"
+  if(modelname=="da"){
+    da=decompose(x,type="additive")
+    da_res=window(da$random, start=as.numeric(start(x)+c(0,26)),
+                  end=as.numeric(end(x)-c(0,26)))
+    result<-plot(da_res,type="l",main="decomposition residuals")
+  }
+  else if (modelname=="stl"){
+    result<-plot(modelselected$time.series[,'remainder'],type='l' ,
+                 main="stl residuals")
+  }
+  else if (modelname=="reg^2"){
+    time=time(x)
+    seas=cycle(x)
+    data=coredata(x)
+    reg2=lm(data~0+time+time^2+factor(seas))
+    result<-plot(resid(reg2),type="l",main="reg2 residuals")
+  }
+  else if (modelname=="reg^3"){
+    time=time(x)
+    seas=cycle(x)
+    data=coredata(x)
+    reg3=lm(data~0+time+time^2+time^3+factor(seas))
+    result<-plot(resid(reg3),type="l" ,main="reg3 residuals" )
+  }
+  else if (modelname=="HW"){
+    hwa=HoltWinters(x,seasonal='additive')
+    res_hwa=x-hwa$fitted[,'xhat']
+    result<-plot(res_hwa,type="l",main="Holt-Winters residuals")
+  }
+  else if (modelname =="AutoArima"){
+    autoarima=auto.arima(x,approximation=FALSE,stationary=FALSE,max.p=4,max.q=4)
+    res_arima=autoarima$residuals 
+    result<-plot(res_arima,main="arima model residuals",type="l")
+  }
+  else  result=23333
+  return (result)
+}
+
+formforecast<-function(a,k){
+  modelname<-modelname(a)
+  ##modelname<-"reg^3"
+  modelselected<-modelselected(a)
+  ##t=time(a)
+  ##s=cycle(a)
+  ##d=coredata(a)
+  ##reg_2<-lm(d~t+t^2+factor(s))
+  ##modelselected<-reg_2
+
+  if (modelname=="stl"){
+    result<-forecast(modelselected,method="naive",h=k,level=95)
+  }
+  else if(modelname=="da"){
+    ## forecast based on regression of trend component
+    ## multiplicative decompose forecast is based on additive forecast
+    ## for the reason that: event count may be zero and multi-decomp requires non-zero
+    da<-decompose(a,type="additive")
+    time<-time(da$trend)
+    lm_trend<-lm(da$trend~time)
+    predtime=seq((end(a)[1]+end(a)[2]/52),
+                 length.out=k, by=1/52)
+    preddata=predict(lm_trend,data.frame(time=predtime),se.fit=TRUE)
+    predvalues=preddata$fit
+    ## add seasonal components 
+    predseas<-da$seasonal[(match(tail(da$seasonal,1),da$seasonal)+1):
+                            (match(tail(da$seasonal,1),da$seasonal)+k)]
+## no need to add error terms expectation crunches them out 
+## error terms are from regression model s.e., 95% C.I. 
+    spredvalues=predvalues+predseas
+    prederror=preddata$se.fit
+    predupperse=spredvalues+2*prederror
+    predlwrse=spredvalues-2*prederror
+    result<-cbind(spredvalues,predlwrse,predupperse)
+  }
+  else if (modelname=="AutoArima"){
+    result<-forecast(modelselected,h=k,level=95)
+}
+  else if(modelname=="HW"){
+    result<-forecast(modelselected,h=k,level=95)
+}
+  else if (modelname=="reg^2"){
+  t<-time(a)
+  s<-cycle(a)
+  d<-coredata(a)
+  reg_2<-lm(d~t+t^2+factor(s))
+  predtime=seq((end(a)[1]+end(a)[2]/52),length.out=k, by=1/52)
+  ps<-seq(from=(tail(cycle(a),1)+1),to=(tail(cycle(a),1)+k),by=1)
+  preddata<-predict(reg_2,data.frame(t=predtime, s=ps),se.fit=TRUE)
+  spredvalues=preddata$fit
+  prederror=preddata$se.fit
+  predupperse=spredvalues+2*prederror
+  predlwrse=spredvalues-2*prederror
+  result<-cbind(spredvalues ,predlwrse,predupperse)
+}
+  else if (modelname=="reg^3"){
+    t<-time(a)
+    s<-cycle(a)
+    d<-coredata(a)
+    reg_3<-lm(d~t+t^2+t^3+factor(s))
+    predtime=seq((end(a)[1]+end(a)[2]/52),length.out=k, by=1/52)
+    ps<-seq(from=(tail(cycle(a),1)+1),to=(tail(cycle(a),1)+k),by=1)
+    preddata<-predict(reg_3,data.frame(t=predtime, s=ps),se.fit=TRUE)
+    spredvalues=preddata$fit
+    prederror=preddata$se.fit
+    predupperse=spredvalues+2*prederror
+    predlwrse=spredvalues-2*prederror
+    result<-cbind(spredvalues, predlwrse,predupperse)
+}
+  else result=2333333
+  return (result) }
