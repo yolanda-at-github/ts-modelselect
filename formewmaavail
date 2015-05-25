@@ -1,0 +1,57 @@
+library(FinTS)
+library('RODBC')
+library(data.table)
+library(ggplot2)
+library(gdata)
+library(forecast)
+library(boot)
+library(WriteXLS)
+
+cleannegative<-function(x){## x is the output of formforecast 
+  x<-as.data.frame(x)
+  x[,1][which(x[,1]<0)]<-0
+  x[,2][which(x[,2]<0)]<-0
+  x[,3][which(x[,3]<0)]<-0
+  return (x)  
+}
+
+formewma<-function(x,k){
+  y<-formforecast(x,k)
+  ## remove negative forecast
+  y<-cleannegative(y)
+  z<-as.data.frame(y)
+  ## insert a row on top 
+  LAST<-(tail(as.data.frame(x),1)$x)*0.125+(as.data.frame(x)[length(x)-1,])*0.875
+  z[1,4]<-z[1,1]
+  z[1,5]<-z[1,2]
+  z[1,6]<-z[1,3]
+  z<-rbind(c(-100,-100,-100,LAST,LAST,LAST),z)
+  for( i in (2:nrow(z))){
+    z[i,4]<-0.875*z[i-1,4]+0.125*z[i,1]
+    z[i,5]<-0.875*z[i-1,5]+0.125*z[i,2]
+    z[i,6]<-0.875*z[i-1,6]+0.125*z[i,3]}
+  z<-z[,c(4:6)]
+  class(z)
+  unname(z)
+  colnames(z)<-c("ewma point estimate","ewma upr lmt","ewma lwr lmt")
+  return (z)
+}
+
+## function: formavail
+## input: formewma of average duration and form_ewma of event count , and expected I.B.
+## output: ewma of availability rate 
+## x is historical average duration, y is historical ewma dudl rate 
+## k is the forecasting term
+## seqeunce of x and y doesn't matter 
+
+formavail<-function(x,y,k){
+  ewma_forecast_x<-formewma(x,k)
+  ewma_forecast_y<-formewma(y,k)
+  z<-1-ewma_forecast_x*ewma_forecast_y/67200
+  ## if the generated avail is greater than 1 then set to be 1  
+  z[,1][which(z[,1]>1)]<-1 
+  z[,2][which(z[,2]>1)]<-1
+  z[,3][which(z[,3]>1)]<-1
+  return (z)
+}
+
