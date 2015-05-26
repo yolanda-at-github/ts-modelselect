@@ -187,3 +187,15 @@ formforecast<-function(a,k){
 }
   else result=2333333
   return (result) }
+
+
+ewma<-function(x){
+  z<-as.data.frame(x)
+  z[,2]<-NA
+  z[,2]<-z[,1]
+  for (i in (2:nrow(z))){
+    z[i,2]<-0.125*z[i,1]+0.875*z[i-1,2]
+  }
+  colnames(z)<-c("orginal","ewma")
+  return(z)
+}
